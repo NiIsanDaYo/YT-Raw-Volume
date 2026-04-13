@@ -3,6 +3,7 @@
   "name": "YT Raw Volume",
   "version": "1.0.0",
   "description": "YoutubeおよびYouTube Musicのラウドネス正規化を無効化。動画ごとの本来の音量バランスをそのまま届けます。",
+  "author": "NiIsan",
   "content_scripts": [
     {
       "matches": [
