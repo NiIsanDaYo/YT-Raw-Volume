@@ -1,0 +1,23 @@
+{
+  "manifest_version": 3,
+  "name": "YT Raw Volume",
+  "version": "1.0.0",
+  "description": "YoutubeおよびYouTube Musicのラウドネス正規化を無効化。動画ごとの本来の音量バランスをそのまま届けます。",
+  "content_scripts": [
+    {
+      "matches": [
+        "https://www.youtube.com/*",
+        "https://music.youtube.com/*"
+      ],
+      "js": ["content.js"],
+      "run_at": "document_start",
+      "all_frames": true,
+      "world": "MAIN"
+    }
+  ],
+  "icons": {
+    "16": "icon16.png",
+    "48": "icon48.png",
+    "128": "icon128.png"
+  }
+}

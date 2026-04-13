@@ -1,0 +1,56 @@
+# YT Raw Volume
+
+> YouTube / YouTube Music のラウドネス正規化を無効化するブラウザ拡張機能
+
+YouTubeは視聴者体験の統一を目的として、動画ごとの音量を自動調整（ラウドネスノーマライゼーション）しています。  
+**YT Raw Volume** はこの正規化をインターセプトし、動画本来の音量バランスをそのまま届けます。
+
+---
+
+## 機能
+
+- YouTube および YouTube Music のラウドネス正規化を無効化
+- スライダーで設定した音量をそのまま維持
+- 軽量・ノートラッキング・外部通信なし
+
+---
+
+## 対応ブラウザ
+
+- Google Chrome / Chromium 系（Manifest V3 対応）
+
+---
+
+## インストール方法
+
+### 手動インストール（開発者モード）
+
+1. このリポジトリをクローンまたは ZIP でダウンロード
+   ```
+   git clone https://github.com/NiIsanDaYo/YT-Raw-Volume.git
+   ```
+2. Chrome で `chrome://extensions/` を開く
+3. 右上の「**デベロッパーモード**」をオンにする
+4. 「**パッケージ化されていない拡張機能を読み込む**」をクリック
+5. ダウンロードしたフォルダを選択
+
+---
+
+## 仕組み
+
+YouTubeは動画再生時に `video.volume` プロパティへ書き込むことで音量正規化を行います。  
+本拡張は `document_start` + `MAIN` ワールドで `Object.defineProperty` を使い、`video.volume` の setter をインスタンスレベルでシャドウイング。  
+YouTubeからの書き込みを無効化しつつ、UIスライダーの `aria-valuenow` からユーザーの意図した音量を読み取り、ネイティブ setter 経由で正確に適用します。
+
+---
+
+## ファイル構成
+
+```
+YT-Raw-Volume/
+├── manifest.json   # 拡張機能のメタデータ（Manifest V3）
+├── content.js      # メインロジック（ラウドネス正規化の無効化）
+├── icon16.png      # アイコン（16×16）
+├── icon48.png      # アイコン（48×48）
+└── icon128.png     # アイコン（128×128）
+```
