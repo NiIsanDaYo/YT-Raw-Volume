@@ -80,6 +80,42 @@
     });
   }
 
+  function siteKeyFromUrl(url) {
+    try {
+      var host = new URL(url).hostname;
+      if (host === "music.youtube.com") return "music";
+      if (host === "www.youtube.com") return "youtube";
+      return null;
+    } catch (error) {
+      return null;
+    }
+  }
+
+  function fallbackStatusFromTab(tab) {
+    var key = tab && siteKeyFromUrl(tab.url);
+    if (!key) return null;
+
+    var enabled = settings[key] !== false;
+    return {
+      actualVolumePercent: null,
+      enabled: enabled,
+      host: new URL(tab.url).hostname,
+      lastRestorePercent: null,
+      loudnessDb: null,
+      mediaCount: 0,
+      mode: "-",
+      normalizationFound: false,
+      normalizedVolumePercent: null,
+      patchedCount: 0,
+      reason: enabled ? "waiting-for-media" : "domain-disabled",
+      settingKey: key,
+      sliderFound: false,
+      supported: true,
+      volumePercent: null,
+      active: false,
+    };
+  }
+
   function statusLabel(status) {
     if (!status) return { text: "対象外", className: "off" };
     if (!status.supported) return { text: "対象外", className: "off" };
@@ -142,7 +178,9 @@
   }
 
   function refreshStatus() {
-    requestStatus(activeTab && activeTab.id).then(render);
+    requestStatus(activeTab && activeTab.id).then(function (status) {
+      render(status || fallbackStatusFromTab(activeTab));
+    });
   }
 
   function updateSetting(key, value) {
