@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>YT Raw Volume</title>
+    <link rel="stylesheet" href="popup.css">
+  </head>
+  <body>
+    <main class="popup">
+      <header class="header">
+        <img class="icon" src="icon48.png" alt="">
+        <div>
+          <h1>YT Raw Volume</h1>
+          <p id="statusText">確認中</p>
+        </div>
+      </header>
+
+      <section class="status" aria-label="現在のページ">
+        <div class="status-row">
+          <span>現在のページ</span>
+          <strong id="pageState">確認中</strong>
+        </div>
+        <div class="status-grid">
+          <span>種類</span>
+          <strong id="modeText">-</strong>
+          <span>音量</span>
+          <strong id="volumeText">-</strong>
+          <span>Media</span>
+          <strong id="mediaText">-</strong>
+          <span>Slider</span>
+          <strong id="sliderText">-</strong>
+        </div>
+      </section>
+
+      <section class="settings" aria-label="ドメイン別設定">
+        <label class="toggle-row">
+          <span>
+            <strong>YouTube</strong>
+            <small>www.youtube.com</small>
+          </span>
+          <input id="youtubeToggle" type="checkbox" role="switch">
+        </label>
+
+        <label class="toggle-row">
+          <span>
+            <strong>YouTube Music</strong>
+            <small>music.youtube.com</small>
+          </span>
+          <input id="musicToggle" type="checkbox" role="switch">
+        </label>
+      </section>
+    </main>
+
+    <script src="popup.js"></script>
+  </body>
+</html>

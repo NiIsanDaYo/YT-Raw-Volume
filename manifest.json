@@ -4,6 +4,16 @@
   "version": "1.0.0",
   "description": "YoutubeおよびYouTube Musicのラウドネス正規化を無効化。動画ごとの本来の音量バランスをそのまま届けます。",
   "author": "NiIsan",
+  "permissions": ["activeTab", "storage"],
+  "action": {
+    "default_icon": {
+      "16": "icon16.png",
+      "48": "icon48.png",
+      "128": "icon128.png"
+    },
+    "default_title": "YT Raw Volume",
+    "default_popup": "popup.html"
+  },
   "content_scripts": [
     {
       "matches": [
@@ -14,6 +24,15 @@
       "run_at": "document_start",
       "all_frames": true,
       "world": "MAIN"
+    },
+    {
+      "matches": [
+        "https://www.youtube.com/*",
+        "https://music.youtube.com/*"
+      ],
+      "js": ["bridge.js"],
+      "run_at": "document_start",
+      "all_frames": true
     }
   ],
   "icons": {
