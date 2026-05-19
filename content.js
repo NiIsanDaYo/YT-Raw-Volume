@@ -29,6 +29,9 @@
   var prePatchVolumes = new WeakMap();
   var pendingSyncs = new WeakMap();
   var watchedSliders = new WeakSet();
+  var loudnessByVideoId = Object.create(null);
+  var currentLoudnessDb = null;
+  var lastRestoreVolume = null;
   var scanTimer = 0;
   var statusTimer = 0;
 
@@ -54,11 +57,173 @@
     );
   }
 
+  function currentVideoId() {
+    try {
+      return new URL(location.href).searchParams.get("v");
+    } catch (error) {
+      return null;
+    }
+  }
+
   function clampVolume(value) {
     if (!Number.isFinite(value)) return null;
     if (value < 0) return 0;
     if (value > 1) return 1;
     return value;
+  }
+
+  function recordLoudness(loudnessDb, videoId) {
+    var value = Number(loudnessDb);
+    if (!Number.isFinite(value)) return;
+
+    currentLoudnessDb = value;
+    if (videoId) loudnessByVideoId[videoId] = value;
+  }
+
+  function responseVideoId(response) {
+    return (
+      response &&
+      response.videoDetails &&
+      typeof response.videoDetails.videoId === "string" &&
+      response.videoDetails.videoId
+    );
+  }
+
+  function scanLoudness(response, depth) {
+    if (!response || typeof response !== "object" || depth > 7) return;
+
+    var audioConfig =
+      (response.playerConfig && response.playerConfig.audioConfig) ||
+      response.audioConfig;
+
+    if (audioConfig && "loudnessDb" in audioConfig) {
+      recordLoudness(audioConfig.loudnessDb, responseVideoId(response));
+    }
+
+    var skipKeys = {
+      adaptiveFormats: true,
+      captions: true,
+      formats: true,
+      hlsManifestUrl: true,
+      responseContext: true,
+      streamingData: true,
+      thumbnails: true,
+      trackingParams: true,
+    };
+
+    for (var key in response) {
+      if (skipKeys[key]) continue;
+      scanLoudness(response[key], depth + 1);
+    }
+  }
+
+  function scanKnownLoudnessSources() {
+    scanLoudness(window.ytInitialPlayerResponse, 0);
+    scanLoudness(window.ytInitialData, 0);
+
+    var rawPlayerResponse =
+      window.ytplayer &&
+      window.ytplayer.config &&
+      window.ytplayer.config.args &&
+      window.ytplayer.config.args.raw_player_response;
+
+    scanLoudness(rawPlayerResponse, 0);
+  }
+
+  function hookInitialPlayerResponse() {
+    var value = window.ytInitialPlayerResponse;
+
+    try {
+      Object.defineProperty(window, "ytInitialPlayerResponse", {
+        configurable: true,
+        enumerable: true,
+        get: function () {
+          return value;
+        },
+        set: function (nextValue) {
+          value = nextValue;
+          setTimeout(function () {
+            scanLoudness(nextValue, 0);
+          }, 0);
+        },
+      });
+    } catch (error) {
+      scanLoudness(value, 0);
+    }
+  }
+
+  function hookFetch() {
+    if (!window.fetch) return;
+
+    var nativeFetch = window.fetch;
+    window.fetch = function () {
+      var input = arguments[0];
+      var responsePromise = nativeFetch.apply(this, arguments);
+
+      responsePromise
+        .then(function (response) {
+          var url = "";
+
+          try {
+            url = typeof input === "string" ? input : input && input.url;
+            if (!url || url.indexOf("/youtubei/v1/player") === -1) return;
+
+            response
+              .clone()
+              .json()
+              .then(function (data) {
+                scanLoudness(data, 0);
+              })
+              .catch(function () {});
+          } catch (error) {}
+        })
+        .catch(function () {});
+
+      return responsePromise;
+    };
+  }
+
+  function hookXhr() {
+    if (!window.XMLHttpRequest) return;
+
+    var nativeOpen = XMLHttpRequest.prototype.open;
+    var nativeSend = XMLHttpRequest.prototype.send;
+
+    XMLHttpRequest.prototype.open = function () {
+      this.__ytRawVolumeUrl = arguments[1];
+      return nativeOpen.apply(this, arguments);
+    };
+
+    XMLHttpRequest.prototype.send = function () {
+      var xhr = this;
+
+      xhr.addEventListener("load", function () {
+        var url = String(xhr.__ytRawVolumeUrl || "");
+        if (url.indexOf("/youtubei/v1/player") === -1) return;
+
+        try {
+          scanLoudness(JSON.parse(xhr.responseText), 0);
+        } catch (error) {}
+      });
+
+      return nativeSend.apply(this, arguments);
+    };
+  }
+
+  function currentLoudnessDbValue() {
+    var videoId = currentVideoId();
+    var loudnessDb =
+      videoId && loudnessByVideoId[videoId] !== undefined
+        ? loudnessByVideoId[videoId]
+        : currentLoudnessDb;
+
+    return Number.isFinite(loudnessDb) ? loudnessDb : null;
+  }
+
+  function loudnessFactor() {
+    var loudnessDb = currentLoudnessDbValue();
+    if (!Number.isFinite(loudnessDb) || loudnessDb <= 0) return 1;
+    return clampVolume(Math.pow(10, -loudnessDb / 20));
   }
 
   function sliderVolume(slider) {
@@ -88,6 +253,18 @@
 
   function findVolumeSlider(media) {
     return youtubeSlider(media) || musicSlider();
+  }
+
+  function sliderPercent(media) {
+    var volume = sliderVolume(findVolumeSlider(media));
+    return volume === null ? null : Math.round(volume * 100);
+  }
+
+  function playerFor(media) {
+    return (
+      (media && media.closest(".html5-video-player")) ||
+      document.getElementById("movie_player")
+    );
   }
 
   function watchSlider(slider) {
@@ -158,15 +335,50 @@
     });
   }
 
-  function restoreVolume(media) {
-    var volume = requestedVolumes.get(media);
+  function restoredVolume(media) {
+    var slider = sliderVolume(findVolumeSlider(media));
+    var factor = loudnessFactor();
+    var volume = slider === null ? null : slider * factor;
 
-    if (volume === undefined) {
+    if (volume === null) {
+      volume = requestedVolumes.get(media);
+    }
+
+    if (volume === undefined || volume === null) {
       volume = prePatchVolumes.get(media);
     }
 
     volume = clampVolume(Number(volume));
-    if (volume !== null) nativeSetVolume.call(media, volume);
+    return volume;
+  }
+
+  function refreshPlayerVolume(media) {
+    var player = playerFor(media);
+    var percent = sliderPercent(media);
+
+    if (!player || percent === null || typeof player.setVolume !== "function") {
+      return;
+    }
+
+    try {
+      player.setVolume(percent);
+    } catch (error) {}
+  }
+
+  function applyRestoredVolume(media, volume) {
+    if (volume === null) return;
+
+    lastRestoreVolume = volume;
+    nativeSetVolume.call(media, volume);
+
+    [25, 75, 150, 300, 600].forEach(function (delay) {
+      setTimeout(function () {
+        if (domainEnabled() || !media.isConnected) return;
+        if (Object.prototype.hasOwnProperty.call(media, "volume")) return;
+
+        nativeSetVolume.call(media, volume);
+      }, delay);
+    });
   }
 
   function restore(media) {
@@ -176,8 +388,11 @@
     if (timer) clearTimeout(timer);
     pendingSyncs.delete(media);
 
-    restoreVolume(media);
+    var volume = restoredVolume(media);
     delete media.volume;
+    refreshPlayerVolume(media);
+    applyRestoredVolume(media, volume);
+
     appliedVolumes.delete(media);
     requestedVolumes.delete(media);
     prePatchVolumes.delete(media);
@@ -253,6 +468,7 @@
     var mainMedia = primaryMedia(media);
     var slider = findVolumeSlider(mainMedia);
     var currentVolume = sliderVolume(slider);
+    var loudnessDb = currentLoudnessDbValue();
     var enabled = domainEnabled();
     var patchedCount = 0;
 
@@ -265,6 +481,14 @@
       host: location.hostname,
       mediaCount: media.length,
       mode: modeLabel(mainMedia),
+      lastRestorePercent:
+        lastRestoreVolume === null ? null : Math.round(lastRestoreVolume * 100),
+      loudnessDb: loudnessDb,
+      normalizedVolumePercent:
+        currentVolume === null
+          ? null
+          : Math.round(currentVolume * loudnessFactor() * 100),
+      normalizationFound: loudnessDb !== null,
       patchedCount: patchedCount,
       settingKey: siteKey(),
       sliderFound: !!slider,
@@ -322,6 +546,12 @@
       postStatus();
     }
   });
+
+  hookInitialPlayerResponse();
+  hookFetch();
+  hookXhr();
+  scanKnownLoudnessSources();
+  setTimeout(scanKnownLoudnessSources, 500);
 
   scanMedia(document);
 

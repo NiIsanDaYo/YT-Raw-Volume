@@ -98,6 +98,26 @@
     return "適用待機中";
   }
 
+  function volumeText(status) {
+    if (!status || status.volumePercent === null) return "-";
+    var text = status.volumePercent + "%";
+
+    if (!status.normalizationFound) {
+      text += " / 正規化 未取得";
+    } else if (
+      status.normalizedVolumePercent !== null &&
+      status.normalizedVolumePercent !== status.volumePercent
+    ) {
+      text += " / 正規化 " + status.normalizedVolumePercent + "%";
+    }
+
+    if (status.lastRestorePercent !== null && !status.enabled) {
+      text += " / 復帰 " + status.lastRestorePercent + "%";
+    }
+
+    return text;
+  }
+
   function render(status) {
     elements.youtubeToggle.checked = settings.youtube;
     elements.musicToggle.checked = settings.music;
@@ -108,8 +128,7 @@
     elements.statusText.textContent = reasonText(status);
 
     elements.modeText.textContent = status && status.mode ? status.mode : "-";
-    elements.volumeText.textContent =
-      status && status.volumePercent !== null ? status.volumePercent + "%" : "-";
+    elements.volumeText.textContent = volumeText(status);
     elements.mediaText.textContent = status
       ? status.patchedCount + " / " + status.mediaCount
       : "-";
