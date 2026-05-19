@@ -102,13 +102,11 @@
     if (!status || status.volumePercent === null) return "-";
     var text = status.volumePercent + "%";
 
-    if (!status.normalizationFound) {
-      text += " / 正規化 未取得";
-    } else if (
-      status.normalizedVolumePercent !== null &&
-      status.normalizedVolumePercent !== status.volumePercent
+    if (
+      status.actualVolumePercent !== null &&
+      status.actualVolumePercent !== status.volumePercent
     ) {
-      text += " / 正規化 " + status.normalizedVolumePercent + "%";
+      text += " / 実音量 " + status.actualVolumePercent + "%";
     }
 
     if (status.lastRestorePercent !== null && !status.enabled) {

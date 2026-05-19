@@ -42,16 +42,17 @@
     );
   }
 
-  function postSettings(settings) {
+  function postSettings(settings, reloadOnDisable) {
     postToPage({
       type: "settings",
+      reloadOnDisable: reloadOnDisable === true,
       settings: normalizeSettings(settings),
     });
   }
 
   function loadSettings() {
     chrome.storage.sync.get(SETTINGS_KEY, function (items) {
-      postSettings(items[SETTINGS_KEY] || defaultSettings);
+      postSettings(items[SETTINGS_KEY] || defaultSettings, false);
     });
   }
 
@@ -74,7 +75,7 @@
 
   chrome.storage.onChanged.addListener(function (changes, areaName) {
     if (areaName !== "sync" || !changes[SETTINGS_KEY]) return;
-    postSettings(changes[SETTINGS_KEY].newValue || defaultSettings);
+    postSettings(changes[SETTINGS_KEY].newValue || defaultSettings, true);
     requestStatus();
   });
 
