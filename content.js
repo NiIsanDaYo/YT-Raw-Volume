@@ -1,8 +1,8 @@
 /**
  * YT Raw Volume
  *
- * YouTube / YouTube Music の音量正規化を避け、UI スライダー値を
- * HTMLMediaElement のネイティブ volume setter にそのまま反映する。
+ * YouTube / YouTube Music の通常の音量 UI は壊さず、YouTube が正規化で
+ * HTMLMediaElement.volume を下げた後に UI スライダー値へ戻す。
  */
 (function () {
   "use strict";
@@ -19,15 +19,15 @@
     HTMLMediaElement.prototype,
     "volume"
   );
-  if (!volumeDescriptor || !volumeDescriptor.set) return;
+  if (!volumeDescriptor || !volumeDescriptor.get || !volumeDescriptor.set) {
+    return;
+  }
 
   var nativeGetVolume = volumeDescriptor.get;
   var nativeSetVolume = volumeDescriptor.set;
-  var patchedMedia = new Set();
-  var appliedVolumes = new WeakMap();
-  var requestedVolumes = new WeakMap();
-  var prePatchVolumes = new WeakMap();
-  var pendingSyncs = new WeakMap();
+  var watchedMedia = new Set();
+  var correctionTimers = new WeakMap();
+  var correctingMedia = new WeakSet();
   var watchedSliders = new WeakSet();
   var loudnessByVideoId = Object.create(null);
   var currentLoudnessDb = null;
@@ -35,7 +35,8 @@
   var scanTimer = 0;
   var statusTimer = 0;
 
-  var SYNC_DELAY_MS = 5;
+  var CORRECTION_GUARD_MS = 80;
+  var CORRECTION_DELAY_MS = 30;
   var SCAN_DELAY_MS = 100;
   var STATUS_DELAY_MS = 50;
 
@@ -70,6 +71,22 @@
     if (value < 0) return 0;
     if (value > 1) return 1;
     return value;
+  }
+
+  function nativeVolume(media) {
+    return clampVolume(nativeGetVolume.call(media));
+  }
+
+  function setNativeVolume(media, volume) {
+    volume = clampVolume(Number(volume));
+    if (volume === null) return;
+
+    correctingMedia.add(media);
+    nativeSetVolume.call(media, volume);
+
+    setTimeout(function () {
+      correctingMedia.delete(media);
+    }, CORRECTION_GUARD_MS);
   }
 
   function recordLoudness(loudnessDb, videoId) {
@@ -280,127 +297,83 @@
     });
   }
 
-  function sync(media) {
-    if (!domainEnabled()) return;
-
-    var slider = findVolumeSlider(media);
-    var nextVolume = sliderVolume(slider);
-    if (nextVolume === null) return;
-
-    watchSlider(slider);
-
-    if (appliedVolumes.get(media) === nextVolume) return;
-    appliedVolumes.set(media, nextVolume);
-    nativeSetVolume.call(media, nextVolume);
+  function rawTargetVolume(media) {
+    return sliderVolume(findVolumeSlider(media));
   }
 
-  function rememberRequestedVolume(media, value) {
-    var requestedVolume = clampVolume(Number(value));
-    if (requestedVolume === null) return;
-    requestedVolumes.set(media, requestedVolume);
+  function normalizedTargetVolume(media) {
+    var raw = rawTargetVolume(media);
+    return raw === null ? null : clampVolume(raw * loudnessFactor());
   }
 
-  function queueSync(media) {
-    if (!domainEnabled() || pendingSyncs.has(media)) return;
+  function correctVolume(media) {
+    if (!domainEnabled() || !media.isConnected) return;
+
+    var target = rawTargetVolume(media);
+    if (target === null) return;
+
+    watchSlider(findVolumeSlider(media));
+
+    var current = nativeVolume(media);
+    if (current === null || Math.abs(current - target) < 0.002) return;
+
+    setNativeVolume(media, target);
+  }
+
+  function queueCorrection(media, delay) {
+    if (!domainEnabled() || correctionTimers.has(media)) return;
 
     var timer = setTimeout(function () {
-      pendingSyncs.delete(media);
-      sync(media);
+      correctionTimers.delete(media);
+      correctVolume(media);
       queueStatus();
-    }, SYNC_DELAY_MS);
+    }, delay);
 
-    pendingSyncs.set(media, timer);
+    correctionTimers.set(media, timer);
   }
 
-  function patch(media) {
-    if (!domainEnabled() || patchedMedia.has(media)) return;
+  function onVolumeChange(event) {
+    var media = event.currentTarget;
+    if (correctingMedia.has(media)) return;
 
-    var currentDescriptor = Object.getOwnPropertyDescriptor(media, "volume");
-    if (currentDescriptor && currentDescriptor.configurable === false) return;
-
-    if (!prePatchVolumes.has(media) && nativeGetVolume) {
-      prePatchVolumes.set(media, nativeGetVolume.call(media));
-    }
-
-    patchedMedia.add(media);
-    Object.defineProperty(media, "volume", {
-      configurable: true,
-      get: function () {
-        return 1;
-      },
-      set: function (value) {
-        rememberRequestedVolume(media, value);
-        queueSync(media);
-      },
-    });
+    queueCorrection(media, CORRECTION_DELAY_MS);
   }
 
-  function restoredVolume(media) {
-    var slider = sliderVolume(findVolumeSlider(media));
-    var factor = loudnessFactor();
-    var volume = slider === null ? null : slider * factor;
+  function watchMedia(media) {
+    if (watchedMedia.has(media)) return;
 
-    if (volume === null) {
-      volume = requestedVolumes.get(media);
-    }
-
-    if (volume === undefined || volume === null) {
-      volume = prePatchVolumes.get(media);
-    }
-
-    volume = clampVolume(Number(volume));
-    return volume;
+    watchedMedia.add(media);
+    media.addEventListener("volumechange", onVolumeChange, true);
   }
 
-  function refreshPlayerVolume(media) {
+  function clearCorrection(media) {
+    var timer = correctionTimers.get(media);
+    if (timer) clearTimeout(timer);
+    correctionTimers.delete(media);
+  }
+
+  function restoreYouTubeVolume(media) {
     var player = playerFor(media);
     var percent = sliderPercent(media);
 
-    if (!player || percent === null || typeof player.setVolume !== "function") {
-      return;
+    if (player && percent !== null && typeof player.setVolume === "function") {
+      try {
+        player.setVolume(percent);
+      } catch (error) {}
     }
 
-    try {
-      player.setVolume(percent);
-    } catch (error) {}
-  }
-
-  function applyRestoredVolume(media, volume) {
-    if (volume === null) return;
-
-    lastRestoreVolume = volume;
-    nativeSetVolume.call(media, volume);
-
-    [25, 75, 150, 300, 600].forEach(function (delay) {
-      setTimeout(function () {
-        if (domainEnabled() || !media.isConnected) return;
-        if (Object.prototype.hasOwnProperty.call(media, "volume")) return;
-
-        nativeSetVolume.call(media, volume);
-      }, delay);
-    });
-  }
-
-  function restore(media) {
-    if (!patchedMedia.has(media)) return;
-
-    var timer = pendingSyncs.get(media);
-    if (timer) clearTimeout(timer);
-    pendingSyncs.delete(media);
-
-    var volume = restoredVolume(media);
-    delete media.volume;
-    refreshPlayerVolume(media);
-    applyRestoredVolume(media, volume);
-
-    appliedVolumes.delete(media);
-    requestedVolumes.delete(media);
-    prePatchVolumes.delete(media);
-    patchedMedia.delete(media);
+    var volume = normalizedTargetVolume(media);
+    if (volume !== null) {
+      lastRestoreVolume = volume;
+      setNativeVolume(media, volume);
+    }
   }
 
   function restoreAll() {
-    Array.prototype.slice.call(patchedMedia).forEach(restore);
+    Array.prototype.slice.call(watchedMedia).forEach(function (media) {
+      clearCorrection(media);
+      restoreYouTubeVolume(media);
+    });
   }
 
   function scanMedia(root) {
@@ -412,8 +385,8 @@
 
     var media = mediaElements(root);
     for (var i = 0; i < media.length; i++) {
-      patch(media[i]);
-      queueSync(media[i]);
+      watchMedia(media[i]);
+      queueCorrection(media[i], CORRECTION_DELAY_MS);
     }
 
     cleanupDetachedMedia();
@@ -421,8 +394,12 @@
   }
 
   function cleanupDetachedMedia() {
-    Array.prototype.slice.call(patchedMedia).forEach(function (media) {
-      if (!media.isConnected) restore(media);
+    Array.prototype.slice.call(watchedMedia).forEach(function (media) {
+      if (!media.isConnected) {
+        clearCorrection(media);
+        media.removeEventListener("volumechange", onVolumeChange, true);
+        watchedMedia.delete(media);
+      }
     });
   }
 
@@ -459,7 +436,7 @@
     if (!status.enabled) return "domain-disabled";
     if (!status.mediaCount) return "waiting-for-media";
     if (!status.sliderFound) return "waiting-for-slider";
-    if (!status.patchedCount) return "waiting-for-patch";
+    if (!status.patchedCount) return "waiting-for-media-watch";
     return "active";
   }
 
@@ -470,26 +447,30 @@
     var currentVolume = sliderVolume(slider);
     var loudnessDb = currentLoudnessDbValue();
     var enabled = domainEnabled();
-    var patchedCount = 0;
+    var watchedCount = 0;
 
     for (var i = 0; i < media.length; i++) {
-      if (patchedMedia.has(media[i])) patchedCount++;
+      if (watchedMedia.has(media[i])) watchedCount++;
     }
 
     var status = {
+      actualVolumePercent:
+        mainMedia && nativeVolume(mainMedia) !== null
+          ? Math.round(nativeVolume(mainMedia) * 100)
+          : null,
       enabled: enabled,
       host: location.hostname,
-      mediaCount: media.length,
-      mode: modeLabel(mainMedia),
       lastRestorePercent:
         lastRestoreVolume === null ? null : Math.round(lastRestoreVolume * 100),
       loudnessDb: loudnessDb,
+      mediaCount: media.length,
+      mode: modeLabel(mainMedia),
       normalizedVolumePercent:
         currentVolume === null
           ? null
           : Math.round(currentVolume * loudnessFactor() * 100),
       normalizationFound: loudnessDb !== null,
-      patchedCount: patchedCount,
+      patchedCount: watchedCount,
       settingKey: siteKey(),
       sliderFound: !!slider,
       supported: !!siteKey(),
@@ -497,7 +478,7 @@
         currentVolume === null ? null : Math.round(currentVolume * 100),
     };
 
-    status.active = enabled && patchedCount > 0 && status.sliderFound;
+    status.active = enabled && watchedCount > 0 && status.sliderFound;
     status.reason = statusReason(status);
     return status;
   }
