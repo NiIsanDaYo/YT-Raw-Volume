@@ -116,6 +116,13 @@ p {
   padding: 4px;
 }
 
+.note {
+  margin: 8px 2px 0;
+  color: #66666c;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
 .toggle-row {
   display: flex;
   align-items: center;

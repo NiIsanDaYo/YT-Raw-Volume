@@ -2,6 +2,7 @@
   "use strict";
 
   var SETTINGS_KEY = "ytRawVolumeSettings";
+  var REFRESH_INTERVAL_MS = 500;
   var defaultSettings = {
     youtube: true,
     music: true,
@@ -19,6 +20,9 @@
   };
 
   var activeTab = null;
+  var refreshSequence = 0;
+  var refreshTimer = 0;
+  var liveRefreshTimer = 0;
   var settings = Object.assign({}, defaultSettings);
 
   function normalizeSettings(value) {
@@ -173,21 +177,35 @@
       : "-";
   }
 
-  function refreshSoon() {
-    setTimeout(refreshStatus, 140);
+  function scheduleRefresh(delay) {
+    if (refreshTimer) clearTimeout(refreshTimer);
+    refreshTimer = setTimeout(function () {
+      refreshTimer = 0;
+      refreshStatus();
+    }, delay);
   }
 
   function refreshStatus() {
-    requestStatus(activeTab && activeTab.id).then(function (status) {
-      render(status || fallbackStatusFromTab(activeTab));
+    var sequence = ++refreshSequence;
+
+    queryActiveTab().then(function (tab) {
+      if (sequence !== refreshSequence) return;
+
+      activeTab = tab;
+      requestStatus(tab && tab.id).then(function (status) {
+        if (sequence !== refreshSequence) return;
+        render(status || fallbackStatusFromTab(tab));
+      });
     });
   }
 
   function updateSetting(key, value) {
     settings[key] = value;
-    render(null);
+    render(fallbackStatusFromTab(activeTab));
 
-    storageSet(settings).then(refreshSoon);
+    storageSet(settings).then(function () {
+      scheduleRefresh(140);
+    });
   }
 
   function bindEvents() {
@@ -198,6 +216,15 @@
     elements.musicToggle.addEventListener("change", function () {
       updateSetting("music", elements.musicToggle.checked);
     });
+
+    if (chrome.tabs && chrome.tabs.onUpdated) {
+      chrome.tabs.onUpdated.addListener(function (tabId, changeInfo) {
+        if (!activeTab || tabId !== activeTab.id) return;
+        if (!changeInfo.status && !changeInfo.url) return;
+
+        scheduleRefresh(changeInfo.status === "complete" ? 50 : 250);
+      });
+    }
   }
 
   function init() {
@@ -206,10 +233,16 @@
     Promise.all([storageGet(), queryActiveTab()]).then(function (result) {
       settings = result[0];
       activeTab = result[1];
-      render(null);
+      render(fallbackStatusFromTab(activeTab));
       refreshStatus();
+      liveRefreshTimer = setInterval(refreshStatus, REFRESH_INTERVAL_MS);
     });
   }
+
+  window.addEventListener("unload", function () {
+    if (refreshTimer) clearTimeout(refreshTimer);
+    if (liveRefreshTimer) clearInterval(liveRefreshTimer);
+  });
 
   init();
 })();

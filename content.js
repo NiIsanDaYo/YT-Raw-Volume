@@ -33,10 +33,22 @@
   var scanTimer = 0;
   var statusTimer = 0;
   var lastRestoreVolume = null;
+  var suppressReloadWarning = false;
 
   var SYNC_DELAY_MS = 0;
   var SCAN_DELAY_MS = 100;
   var STATUS_DELAY_MS = 50;
+
+  window.addEventListener(
+    "beforeunload",
+    function (event) {
+      if (!suppressReloadWarning) return;
+
+      event.stopImmediatePropagation();
+      delete event.returnValue;
+    },
+    true
+  );
 
   function siteKey() {
     if (location.hostname === "music.youtube.com") return "music";
@@ -221,6 +233,10 @@
 
   function reloadAfterDisable() {
     setTimeout(function () {
+      suppressReloadWarning = true;
+      try {
+        window.onbeforeunload = null;
+      } catch (error) {}
       location.reload();
     }, 50);
   }
