@@ -42,6 +42,14 @@
   }
 
   function youtubeSlider(media) {
+    var reel = media && media.closest("ytd-reel-video-renderer");
+    var shortsSlider =
+      reel &&
+      reel.querySelector(
+        'input#volume-input[role="slider"][aria-valuenow], input.ytdVolumeControlsNativeSlider[aria-valuenow]'
+      );
+    if (shortsSlider) return shortsSlider;
+
     var player = media && media.closest(".html5-video-player");
     return (
       player &&
