@@ -71,7 +71,7 @@
     if (!Number.isFinite(volume)) return null;
 
     max = Number(max);
-    if (!Number.isFinite(max) || max <= 0) max = volume > 1 ? 100 : 1;
+    if (!Number.isFinite(max) || max <= 0) max = 100;
     volume = volume / max;
     if (volume < 0) return 0;
     if (volume > 1) return 1;
@@ -84,7 +84,10 @@
     if (slider.value !== undefined && slider.value !== "") {
       var fromValue = volumeFromPercent(
         slider.value,
-        slider.max || slider.getAttribute("max")
+        slider.max ||
+          slider.getAttribute("max") ||
+          slider.getAttribute("aria-valuemax") ||
+          100
       );
       if (fromValue !== null) return fromValue;
     }
