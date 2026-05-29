@@ -46,37 +46,52 @@
     var shortsSlider =
       reel &&
       reel.querySelector(
-        'input#volume-input[role="slider"][aria-valuenow], input.ytdVolumeControlsNativeSlider[aria-valuenow]'
+        'input#volume-input[role="slider"], input.ytdVolumeControlsNativeSlider'
       );
-    if (shortsSlider) return shortsSlider;
+    if (reel) return shortsSlider || null;
 
     var player = media && media.closest(".html5-video-player");
     return (
       player &&
-      player.querySelector('.ytp-volume-panel[role="slider"][aria-valuenow]')
+      player.querySelector('.ytp-volume-panel[role="slider"]')
     );
   }
 
   function musicSlider() {
     return (
       document.querySelector(
-        'ytmusic-player-bar #volume-slider[role="slider"][aria-valuenow]'
+        'ytmusic-player-bar #volume-slider[role="slider"]'
       ) ||
-      document.querySelector(
-        "ytmusic-player-bar #volume-slider #sliderBar[aria-valuenow]"
-      )
+      document.querySelector("ytmusic-player-bar #volume-slider #sliderBar")
     );
   }
 
-  function sliderVolume(slider) {
-    var raw = slider && slider.getAttribute("aria-valuenow");
-    if (raw === null) return null;
-
-    var volume = Number(raw) / 100;
+  function volumeFromPercent(value, max) {
+    var volume = Number(value);
     if (!Number.isFinite(volume)) return null;
+
+    max = Number(max);
+    if (!Number.isFinite(max) || max <= 0) max = volume > 1 ? 100 : 1;
+    volume = volume / max;
     if (volume < 0) return 0;
     if (volume > 1) return 1;
     return volume;
+  }
+
+  function sliderVolume(slider) {
+    if (!slider) return null;
+
+    if (slider.value !== undefined && slider.value !== "") {
+      var fromValue = volumeFromPercent(
+        slider.value,
+        slider.max || slider.getAttribute("max")
+      );
+      if (fromValue !== null) return fromValue;
+    }
+
+    var raw = slider.getAttribute("aria-valuenow");
+    if (raw === null) return null;
+    return volumeFromPercent(raw, slider.getAttribute("aria-valuemax") || 100);
   }
 
   function primaryMedia(media) {
@@ -84,6 +99,21 @@
       if (!media[i].paused) return media[i];
     }
     return media[0] || null;
+  }
+
+  function playerFor(media) {
+    return (
+      (media && media.closest(".html5-video-player")) ||
+      document.getElementById("movie_player")
+    );
+  }
+
+  function currentMuted(media) {
+    var player = playerFor(media);
+    return !!(
+      (media && media.muted) ||
+      (player && player.classList && player.classList.contains("ytp-muted"))
+    );
   }
 
   function modeLabel(media) {
@@ -104,6 +134,10 @@
     var mainMedia = primaryMedia(media);
     var slider = youtubeSlider(mainMedia) || musicSlider();
     var sliderVol = sliderVolume(slider);
+    var muted = currentMuted(mainMedia);
+    var displayVol = muted ? 0 : sliderVol;
+    var actualVol =
+      mainMedia && Number.isFinite(mainMedia.volume) ? mainMedia.volume : null;
     var enabled = !!key && currentSettings[key] !== false;
     var active = enabled && media.length > 0 && !!slider;
     var reason = "active";
@@ -115,9 +149,7 @@
 
     return {
       actualVolumePercent:
-        mainMedia && Number.isFinite(mainMedia.volume)
-          ? Math.round(mainMedia.volume * 100)
-          : null,
+        actualVol === null ? null : Math.round((muted ? 0 : actualVol) * 100),
       enabled: enabled,
       host: location.hostname,
       lastRestorePercent: null,
@@ -131,7 +163,7 @@
       settingKey: key,
       sliderFound: !!slider,
       supported: !!key,
-      volumePercent: sliderVol === null ? null : Math.round(sliderVol * 100),
+      volumePercent: displayVol === null ? null : Math.round(displayVol * 100),
       active: active,
     };
   }

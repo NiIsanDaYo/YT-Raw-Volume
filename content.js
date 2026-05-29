@@ -2,7 +2,7 @@
  * YT Raw Volume
  *
  * YouTube / YouTube Music の音量 UI はそのまま使わせる。
- * YouTube が media.volume へ正規化後の値を書こうとした時だけ、
+ * YouTube が media.volume へ書き込んだ直後に、
  * UI スライダー値をネイティブ volume setter へ入れ直す。
  */
 (function () {
@@ -27,19 +27,17 @@
   var nativeGetVolume = volumeDescriptor.get;
   var nativeSetVolume = volumeDescriptor.set;
   var patchedMedia = new Set();
-  var earlySyncRetries = new WeakMap();
-  var earlySyncRetryTimers = new WeakMap();
   var pendingSyncs = new WeakMap();
   var requestedVolumes = new WeakMap();
+  var watchedMedia = new WeakSet();
   var watchedSliders = new WeakSet();
   var scanTimer = 0;
   var statusTimer = 0;
   var lastRestoreVolume = null;
   var suppressReloadWarning = false;
 
-  var EARLY_SYNC_RETRY_LIMIT = 40;
-  var EARLY_SYNC_RETRY_MS = 25;
   var SYNC_DELAY_MS = 0;
+  var VOLUME_WRITE_SYNC_DELAY_MS = 5;
   var SCAN_DELAY_MS = 100;
   var STATUS_DELAY_MS = 50;
 
@@ -89,19 +87,57 @@
     nativeSetVolume.call(media, volume);
   }
 
+  function storedPlayerState() {
+    try {
+      var raw = localStorage.getItem("yt-player-volume");
+      if (!raw) return null;
+
+      var value = JSON.parse(raw);
+      var data = value && value.data;
+      if (typeof data === "string") data = JSON.parse(data);
+      return data || null;
+    } catch (error) {
+      return null;
+    }
+  }
+
+  function playerVolume(state) {
+    if (!state || state.volume === undefined) return null;
+    return clampVolume(Number(state.volume) / 100);
+  }
+
+  function volumeFromPercent(value, max) {
+    value = Number(value);
+    if (!Number.isFinite(value)) return null;
+
+    max = Number(max);
+    if (!Number.isFinite(max) || max <= 0) max = value > 1 ? 100 : 1;
+    return clampVolume(value / max);
+  }
+
   function sliderVolume(slider) {
-    var raw = slider && slider.getAttribute("aria-valuenow");
+    if (!slider) return null;
+
+    if (slider.value !== undefined && slider.value !== "") {
+      var fromValue = volumeFromPercent(
+        slider.value,
+        slider.max || slider.getAttribute("max")
+      );
+      if (fromValue !== null) return fromValue;
+    }
+
+    var raw = slider.getAttribute("aria-valuenow");
     if (raw === null) return null;
-    return clampVolume(Number(raw) / 100);
+    return volumeFromPercent(raw, slider.getAttribute("aria-valuemax") || 100);
   }
 
   function volumeSliderSelector() {
     return [
-      '.ytp-volume-panel[role="slider"][aria-valuenow]',
-      'input#volume-input[role="slider"][aria-valuenow]',
-      "input.ytdVolumeControlsNativeSlider[aria-valuenow]",
-      'ytmusic-player-bar #volume-slider[role="slider"][aria-valuenow]',
-      "ytmusic-player-bar #volume-slider #sliderBar[aria-valuenow]",
+      '.ytp-volume-panel[role="slider"]',
+      'input#volume-input[role="slider"]',
+      "input.ytdVolumeControlsNativeSlider",
+      'ytmusic-player-bar #volume-slider[role="slider"]',
+      "ytmusic-player-bar #volume-slider #sliderBar",
     ].join(",");
   }
 
@@ -119,49 +155,28 @@
     var shortsSlider =
       reel &&
       reel.querySelector(
-        'input#volume-input[role="slider"][aria-valuenow], input.ytdVolumeControlsNativeSlider[aria-valuenow]'
+        'input#volume-input[role="slider"], input.ytdVolumeControlsNativeSlider'
       );
-    if (shortsSlider) return shortsSlider;
+    if (reel) return shortsSlider || null;
 
     var player = media && media.closest(".html5-video-player");
     return (
       player &&
-      player.querySelector('.ytp-volume-panel[role="slider"][aria-valuenow]')
+      player.querySelector('.ytp-volume-panel[role="slider"]')
     );
   }
 
   function musicSlider() {
     return (
       document.querySelector(
-        'ytmusic-player-bar #volume-slider[role="slider"][aria-valuenow]'
+        'ytmusic-player-bar #volume-slider[role="slider"]'
       ) ||
-      document.querySelector(
-        "ytmusic-player-bar #volume-slider #sliderBar[aria-valuenow]"
-      )
+      document.querySelector("ytmusic-player-bar #volume-slider #sliderBar")
     );
   }
 
   function findVolumeSlider(media) {
     return youtubeSlider(media) || musicSlider();
-  }
-
-  function targetVolume(media) {
-    var volume = sliderVolume(findVolumeSlider(media));
-    if (volume !== null) return volume;
-
-    var player = playerFor(media);
-    if (!player || typeof player.getVolume !== "function") return null;
-
-    try {
-      return clampVolume(Number(player.getVolume()) / 100);
-    } catch (error) {
-      return null;
-    }
-  }
-
-  function sliderPercent(media) {
-    var volume = targetVolume(media);
-    return volume === null ? null : Math.round(volume * 100);
   }
 
   function playerFor(media) {
@@ -171,63 +186,80 @@
     );
   }
 
+  function currentMuted(media) {
+    var player = playerFor(media);
+    return !!(
+      (media && media.muted) ||
+      (player && player.classList && player.classList.contains("ytp-muted"))
+    );
+  }
+
+  function targetVolume(media) {
+    var state = storedPlayerState();
+
+    if (currentMuted(media)) return 0;
+
+    var volume = sliderVolume(findVolumeSlider(media));
+    if (volume !== null) return volume;
+
+    if (state && state.muted === true) return 0;
+
+    volume = playerVolume(state);
+    if (volume !== null) return volume;
+
+    return null;
+  }
+
+  function sliderPercent(media) {
+    var volume = targetVolume(media);
+    return volume === null ? null : Math.round(volume * 100);
+  }
+
   function watchSlider(slider) {
     if (!slider || watchedSliders.has(slider)) return;
     watchedSliders.add(slider);
 
-    new MutationObserver(function () {
+    var syncAll = function () {
       Array.prototype.slice.call(patchedMedia).forEach(queueSync);
       queueStatus();
+    };
+
+    new MutationObserver(function () {
+      syncAll();
     }).observe(slider, {
       attributes: true,
-      attributeFilter: ["aria-valuenow"],
+      attributeFilter: ["aria-valuenow", "value"],
     });
+
+    slider.addEventListener("input", syncAll, true);
+    slider.addEventListener("change", syncAll, true);
   }
 
   function sync(media) {
     if (!domainEnabled() || !media.isConnected) return;
 
     var slider = findVolumeSlider(media);
-    var volume = targetVolume(media);
-    if (volume === null) {
-      retryEarlySync(media);
-      return;
-    }
-
-    earlySyncRetries.delete(media);
     watchSlider(slider);
-    setNativeVolume(media, volume);
+
+    var volume = targetVolume(media);
+    if (volume === null) return;
+
+    if (Math.abs(nativeVolume(media) - volume) > 0.001) {
+      setNativeVolume(media, volume);
+    }
   }
 
-  function retryEarlySync(media) {
-    if (earlySyncRetryTimers.has(media)) return;
+  function queueSync(media, delay) {
+    if (!domainEnabled()) return;
 
-    var count = earlySyncRetries.get(media) || 0;
-    if (count >= EARLY_SYNC_RETRY_LIMIT) return;
-
-    earlySyncRetries.set(media, count + 1);
-    var timer = setTimeout(function () {
-      earlySyncRetryTimers.delete(media);
-      queueSync(media);
-    }, EARLY_SYNC_RETRY_MS);
-    earlySyncRetryTimers.set(media, timer);
-  }
-
-  function syncAgain(media) {
-    setTimeout(function () {
-      sync(media);
-    }, 50);
-  }
-
-  function queueSync(media) {
-    if (!domainEnabled() || pendingSyncs.has(media)) return;
+    var existingTimer = pendingSyncs.get(media);
+    if (existingTimer) clearTimeout(existingTimer);
 
     var timer = setTimeout(function () {
       pendingSyncs.delete(media);
       sync(media);
-      syncAgain(media);
       queueStatus();
-    }, SYNC_DELAY_MS);
+    }, delay === undefined ? SYNC_DELAY_MS : delay);
 
     pendingSyncs.set(media, timer);
   }
@@ -236,31 +268,58 @@
     var timer = pendingSyncs.get(media);
     if (timer) clearTimeout(timer);
     pendingSyncs.delete(media);
-    timer = earlySyncRetryTimers.get(media);
-    if (timer) clearTimeout(timer);
-    earlySyncRetryTimers.delete(media);
-    earlySyncRetries.delete(media);
+  }
+
+  function watchMedia(media) {
+    if (watchedMedia.has(media)) return;
+
+    watchedMedia.add(media);
+    media.addEventListener(
+      "volumechange",
+      function () {
+        queueSync(media, VOLUME_WRITE_SYNC_DELAY_MS);
+        queueStatus();
+      },
+      true
+    );
+  }
+
+  function interceptVolumeSet(media, value) {
+    var requestedVolume = clampVolume(Number(value));
+    if (requestedVolume === null) return;
+
+    if (!domainEnabled()) {
+      setNativeVolume(media, requestedVolume);
+      return;
+    }
+
+    requestedVolumes.set(media, requestedVolume);
+    patchedMedia.add(media);
+    watchMedia(media);
+
+    watchSlider(findVolumeSlider(media));
+    queueSync(media, VOLUME_WRITE_SYNC_DELAY_MS);
+    queueStatus();
+  }
+
+  function installVolumeInterceptor() {
+    Object.defineProperty(HTMLMediaElement.prototype, "volume", {
+      configurable: volumeDescriptor.configurable,
+      enumerable: volumeDescriptor.enumerable,
+      get: function () {
+        return nativeGetVolume.call(this);
+      },
+      set: function (value) {
+        interceptVolumeSet(this, value);
+      },
+    });
   }
 
   function patch(media) {
-    if (!domainEnabled() || patchedMedia.has(media)) return;
-
-    var currentDescriptor = Object.getOwnPropertyDescriptor(media, "volume");
-    if (currentDescriptor && currentDescriptor.configurable === false) return;
+    if (!domainEnabled()) return;
 
     patchedMedia.add(media);
-    Object.defineProperty(media, "volume", {
-      configurable: true,
-      get: function () {
-        return nativeGetVolume.call(media);
-      },
-      set: function (value) {
-        var requestedVolume = clampVolume(Number(value));
-        if (requestedVolume !== null) requestedVolumes.set(media, requestedVolume);
-        queueSync(media);
-      },
-    });
-
+    watchMedia(media);
     queueSync(media);
   }
 
@@ -272,7 +331,6 @@
     var percent = sliderPercent(media);
     var fallbackVolume = requestedVolumes.get(media);
 
-    delete media.volume;
     patchedMedia.delete(media);
     requestedVolumes.delete(media);
 
@@ -378,7 +436,9 @@
     var mainMedia = primaryMedia(media);
     var slider = findVolumeSlider(mainMedia);
     var sliderVol = sliderVolume(slider);
-    var actualVol = mainMedia ? nativeVolume(mainMedia) : null;
+    var muted = currentMuted(mainMedia);
+    var displayVol = muted ? 0 : sliderVol;
+    var actualVol = muted ? 0 : mainMedia ? nativeVolume(mainMedia) : null;
     var enabled = domainEnabled();
     var patchedCount = 0;
 
@@ -401,7 +461,7 @@
       settingKey: siteKey(),
       sliderFound: !!slider,
       supported: !!siteKey(),
-      volumePercent: sliderVol === null ? null : Math.round(sliderVol * 100),
+      volumePercent: displayVol === null ? null : Math.round(displayVol * 100),
     };
 
     status.active = enabled && patchedCount > 0 && status.sliderFound;
@@ -458,6 +518,7 @@
     }
   });
 
+  installVolumeInterceptor();
   scanMedia(document);
 
   new MutationObserver(function (records) {
