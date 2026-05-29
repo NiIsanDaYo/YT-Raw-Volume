@@ -27,6 +27,8 @@
   var nativeGetVolume = volumeDescriptor.get;
   var nativeSetVolume = volumeDescriptor.set;
   var patchedMedia = new Set();
+  var earlySyncRetries = new WeakMap();
+  var earlySyncRetryTimers = new WeakMap();
   var pendingSyncs = new WeakMap();
   var requestedVolumes = new WeakMap();
   var watchedSliders = new WeakSet();
@@ -35,6 +37,8 @@
   var lastRestoreVolume = null;
   var suppressReloadWarning = false;
 
+  var EARLY_SYNC_RETRY_LIMIT = 40;
+  var EARLY_SYNC_RETRY_MS = 25;
   var SYNC_DELAY_MS = 0;
   var SCAN_DELAY_MS = 100;
   var STATUS_DELAY_MS = 50;
@@ -91,6 +95,25 @@
     return clampVolume(Number(raw) / 100);
   }
 
+  function volumeSliderSelector() {
+    return [
+      '.ytp-volume-panel[role="slider"][aria-valuenow]',
+      'input#volume-input[role="slider"][aria-valuenow]',
+      "input.ytdVolumeControlsNativeSlider[aria-valuenow]",
+      'ytmusic-player-bar #volume-slider[role="slider"][aria-valuenow]',
+      "ytmusic-player-bar #volume-slider #sliderBar[aria-valuenow]",
+    ].join(",");
+  }
+
+  function hasVolumeSlider(root) {
+    if (!root || root.nodeType !== 1) return false;
+    var selector = volumeSliderSelector();
+    return (
+      (root.matches && root.matches(selector)) ||
+      (root.querySelector && !!root.querySelector(selector))
+    );
+  }
+
   function youtubeSlider(media) {
     var reel = media && media.closest("ytd-reel-video-renderer");
     var shortsSlider =
@@ -123,7 +146,17 @@
   }
 
   function targetVolume(media) {
-    return sliderVolume(findVolumeSlider(media));
+    var volume = sliderVolume(findVolumeSlider(media));
+    if (volume !== null) return volume;
+
+    var player = playerFor(media);
+    if (!player || typeof player.getVolume !== "function") return null;
+
+    try {
+      return clampVolume(Number(player.getVolume()) / 100);
+    } catch (error) {
+      return null;
+    }
   }
 
   function sliderPercent(media) {
@@ -155,11 +188,29 @@
     if (!domainEnabled() || !media.isConnected) return;
 
     var slider = findVolumeSlider(media);
-    var volume = sliderVolume(slider);
-    if (volume === null) return;
+    var volume = targetVolume(media);
+    if (volume === null) {
+      retryEarlySync(media);
+      return;
+    }
 
+    earlySyncRetries.delete(media);
     watchSlider(slider);
     setNativeVolume(media, volume);
+  }
+
+  function retryEarlySync(media) {
+    if (earlySyncRetryTimers.has(media)) return;
+
+    var count = earlySyncRetries.get(media) || 0;
+    if (count >= EARLY_SYNC_RETRY_LIMIT) return;
+
+    earlySyncRetries.set(media, count + 1);
+    var timer = setTimeout(function () {
+      earlySyncRetryTimers.delete(media);
+      queueSync(media);
+    }, EARLY_SYNC_RETRY_MS);
+    earlySyncRetryTimers.set(media, timer);
   }
 
   function syncAgain(media) {
@@ -185,6 +236,10 @@
     var timer = pendingSyncs.get(media);
     if (timer) clearTimeout(timer);
     pendingSyncs.delete(media);
+    timer = earlySyncRetryTimers.get(media);
+    if (timer) clearTimeout(timer);
+    earlySyncRetryTimers.delete(media);
+    earlySyncRetries.delete(media);
   }
 
   function patch(media) {
@@ -239,6 +294,10 @@
     Array.prototype.slice.call(patchedMedia).forEach(restore);
   }
 
+  function syncPatchedMedia() {
+    Array.prototype.slice.call(patchedMedia).forEach(queueSync);
+  }
+
   function reloadAfterDisable() {
     setTimeout(function () {
       suppressReloadWarning = true;
@@ -260,6 +319,8 @@
     for (var i = 0; i < media.length; i++) {
       patch(media[i]);
     }
+
+    if (hasVolumeSlider(root)) syncPatchedMedia();
 
     cleanupDetachedMedia();
     queueStatus();
